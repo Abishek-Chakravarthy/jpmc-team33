@@ -94,7 +94,7 @@ const asyncHandler = (fn) => {
  */
 const errorHandler = (error, req, res, next) => {
   const sakhiId = req.sakhiId || 'unknown';
-  const intent = req.body?.intent || 'unknown';
+  const intent = req.body?.intent || req.body?.query || 'unknown';
   
   // Log the error with context
   logger.error('Chatbot error occurred', {
@@ -146,7 +146,7 @@ const errorHandler = (error, req, res, next) => {
   } else {
     // Generic server error
     response = formatErrorResponse(
-      new ChatbotError(config.RESPONSE_TEMPLATES.SERVER_ERROR),
+      new ChatbotError(config.RESPONSE_TEMPLATES?.SERVER_ERROR || 'Internal server error'),
       sakhiId
     );
   }
@@ -204,9 +204,12 @@ const validateIntent = (intent, params = {}) => {
     throw new ValidationError('Intent is required', 'intent');
   }
 
-  if (!config.SUPPORTED_INTENTS.includes(intent)) {
+  // Support for conversational intent
+  const supportedIntents = [...(config.SUPPORTED_INTENTS || []), 'conversational'];
+  
+  if (!supportedIntents.includes(intent)) {
     throw new ValidationError(
-      `Unsupported intent: ${intent}. Supported intents: ${config.SUPPORTED_INTENTS.join(', ')}`,
+      `Unsupported intent: ${intent}. Supported intents: ${supportedIntents.join(', ')}`,
       'intent'
     );
   }
@@ -230,7 +233,52 @@ const validateIntent = (intent, params = {}) => {
         throw new ValidationError('Rain threshold must be positive', 'threshold');
       }
       break;
+      
+    case 'scheme_description':
+      if (!params.schemeCode) {
+        throw new ValidationError('Scheme code is required for scheme description', 'schemeCode');
+      }
+      break;
+      
+    case 'conversational':
+      // No specific validation needed for conversational intent
+      break;
   }
+};
+
+/**
+ * Validate natural language query
+ */
+const validateQuery = (query) => {
+  if (!query || typeof query !== 'string') {
+    throw new ValidationError('Query must be a non-empty string', 'query');
+  }
+  
+  const trimmed = query.trim();
+  if (trimmed.length < 2) {
+    throw new ValidationError('Query must be at least 2 characters long', 'query');
+  }
+  
+  if (trimmed.length > 1000) {
+    throw new ValidationError('Query must be less than 1000 characters', 'query');
+  }
+  
+  return trimmed;
+};
+
+/**
+ * Validate context object for AI requests
+ */
+const validateContext = (context) => {
+  if (context && typeof context !== 'object') {
+    throw new ValidationError('Context must be an object', 'context');
+  }
+  
+  if (context && Array.isArray(context)) {
+    throw new ValidationError('Context must be an object, not an array', 'context');
+  }
+  
+  return context || {};
 };
 
 module.exports = {
@@ -250,5 +298,7 @@ module.exports = {
   // Utility functions
   formatErrorResponse,
   validateRequired,
-  validateIntent
+  validateIntent,
+  validateQuery,
+  validateContext
 };

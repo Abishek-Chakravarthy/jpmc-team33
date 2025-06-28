@@ -7,6 +7,7 @@ const config = require('./config');
 const inventoryService = require('./chatbotService/inventoryService');
 const weatherService = require('./chatbotService/weatherService');
 const schemeService = require('./chatbotService/schemeService');
+const geminiService = require('./services/geminiService');
 
 /**
  * Main intent processing controller
@@ -88,6 +89,136 @@ const processIntent = async (req, res) => {
 
   } catch (error) {
     // Error will be handled by errorHandler middleware
+    throw error;
+  }
+};
+
+/**
+ * Process natural language query using Gemini AI
+ */
+const processNaturalLanguage = async (req, res) => {
+  const startTime = Date.now();
+  const { query, context = {}, includeConversational = true } = req.body;
+  const sakhiId = req.sakhiId;
+
+  try {
+    // Validate request
+    validateRequired(req.body, ['query']);
+    
+    if (typeof query !== 'string' || query.trim().length < 2) {
+      throw new ValidationError('Query must be a valid string with at least 2 characters');
+    }
+
+    // Step 1: Extract intent using Gemini
+    const intentResult = await geminiService.processNaturalLanguage(query, sakhiId, context);
+    
+    if (!intentResult.success) {
+      throw new ValidationError('Failed to process natural language query');
+    }
+
+    let response = {
+      success: true,
+      originalQuery: query,
+      detectedIntent: intentResult.intent,
+      confidence: intentResult.confidence,
+      parameters: intentResult.parameters,
+      needsLLMResponse: intentResult.needsLLMResponse,
+      timestamp: new Date().toISOString()
+    };
+
+    // Step 2: If it's a supported intent, fetch data
+    if (config.SUPPORTED_INTENTS.includes(intentResult.intent)) {
+      try {
+        const intentData = await processIndividualIntent(
+          intentResult.intent, 
+          intentResult.parameters, 
+          sakhiId
+        );
+        response.intentData = intentData;
+
+        // Step 3: Generate conversational response if requested
+        if (includeConversational && intentResult.needsLLMResponse) {
+          const conversationalResponse = await geminiService.generateConversationalResponse(
+            intentResult.intent,
+            intentData,
+            query,
+            sakhiId
+          );
+          response.conversationalResponse = conversationalResponse;
+        }
+      } catch (intentError) {
+        logger.warn('Intent processing failed, proceeding with LLM response only', {
+          sakhiId,
+          intent: intentResult.intent,
+          error: intentError.message
+        });
+        
+        // If intent processing fails but we have a conversational intent, generate response anyway
+        if (intentResult.needsLLMResponse) {
+          const fallbackResponse = await geminiService.generateResponse(query, sakhiId, context);
+          response.conversationalResponse = fallbackResponse.response;
+          response.fallbackUsed = true;
+        }
+      }
+    } else if (intentResult.intent === 'conversational' || intentResult.needsLLMResponse) {
+      // Step 4: Handle conversational queries
+      const geminiResponse = await geminiService.generateResponse(query, sakhiId, context);
+      response.conversationalResponse = geminiResponse.response;
+      response.confidence = geminiResponse.confidence;
+      response.processingTime = geminiResponse.processingTime;
+      response.modelUsed = geminiResponse.model;
+    }
+
+    const duration = Date.now() - startTime;
+    response.totalProcessingTime = `${duration}ms`;
+
+    // Log the natural language processing
+    logger.logChatIntent(sakhiId, 'natural_language', { query, detectedIntent: intentResult.intent }, response, duration);
+
+    res.json(response);
+
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    logger.error('Natural language processing failed', {
+      sakhiId,
+      query,
+      error: error.message,
+      duration: `${duration}ms`
+    });
+    throw error;
+  }
+};
+
+/**
+ * Generate response directly using Gemini (for complex queries)
+ */
+const generateAIResponse = async (req, res) => {
+  const startTime = Date.now();
+  const { query, context = {} } = req.body;
+  const sakhiId = req.sakhiId;
+
+  try {
+    validateRequired(req.body, ['query']);
+
+    const geminiResponse = await geminiService.generateResponse(query, sakhiId, context);
+
+    const response = {
+      success: true,
+      query,
+      response: geminiResponse.response,
+      confidence: geminiResponse.confidence,
+      processingTime: geminiResponse.processingTime,
+      model: geminiResponse.model,
+      contextUsed: geminiResponse.contextUsed,
+      timestamp: new Date().toISOString()
+    };
+
+    const duration = Date.now() - startTime;
+    logger.logChatIntent(sakhiId, 'ai_response', { query }, response, duration);
+
+    res.json(response);
+
+  } catch (error) {
     throw error;
   }
 };
@@ -193,14 +324,29 @@ const getSupportedIntents = async (req, res) => {
         intent: 'user_summary',
         params: { includeInactive: true }
       }
+    },
+    conversational: {
+      description: 'Natural language conversation and complex queries',
+      parameters: {
+        context: 'Optional: additional context for better responses'
+      },
+      example: {
+        intent: 'conversational',
+        params: { context: 'weather and financial data' }
+      }
     }
   };
 
+  // Add conversational to supported intents
+  const allSupportedIntents = [...config.SUPPORTED_INTENTS, 'conversational'];
+
   res.json({
     success: true,
-    supportedIntents: config.SUPPORTED_INTENTS,
+    supportedIntents: allSupportedIntents,
     descriptions: intentDescriptions,
-    totalIntents: config.SUPPORTED_INTENTS.length
+    totalIntents: allSupportedIntents.length,
+    naturalLanguageSupported: true,
+    aiModel: 'gemini-2.0-flash-exp'
   });
 };
 
@@ -229,17 +375,7 @@ const processBatchIntents = async (req, res) => {
       const { intent, params = {} } = intents[i];
       validateIntent(intent, params);
 
-      // Create a mock request object for individual intent processing
-      const mockReq = {
-        body: { intent, params },
-        sakhiId
-      };
-      
-      const mockRes = {
-        json: (data) => data
-      };
-
-      // Process individual intent (reuse processIntent logic)
+      // Process individual intent
       const result = await processIndividualIntent(intent, params, sakhiId);
       results.push({
         index: i,
@@ -319,9 +455,38 @@ const getChatHistory = async (req, res) => {
   });
 };
 
+/**
+ * Health check for AI services
+ */
+const getHealthCheck = async (req, res) => {
+  try {
+    const geminiHealth = await geminiService.healthCheck();
+    
+    res.json({
+      success: true,
+      services: {
+        gemini: geminiHealth,
+        database: 'healthy', // TODO: Add actual DB health check
+        redis: 'not_configured' // TODO: Add Redis health check if used
+      },
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(503).json({
+      success: false,
+      error: 'Health check failed',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
+};
+
 module.exports = {
   processIntent,
+  processNaturalLanguage,
+  generateAIResponse,
   getSupportedIntents,
   processBatchIntents,
-  getChatHistory
+  getChatHistory,
+  getHealthCheck
 };

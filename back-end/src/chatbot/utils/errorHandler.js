@@ -241,7 +241,8 @@ const validateIntent = (intent, params = {}) => {
       break;
       
     case 'conversational':
-      // No specific validation needed for conversational intent
+    case 'agriculture_advisory':
+      // No specific validation needed for these intents
       break;
   }
 };
@@ -282,7 +283,7 @@ const validateContext = (context) => {
 };
 
 module.exports = {
-  // Error classes
+  // Error classes - ensure these are properly exported
   ChatbotError,
   ValidationError,
   DatabaseError,

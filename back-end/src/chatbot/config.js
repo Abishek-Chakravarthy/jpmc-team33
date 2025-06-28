@@ -4,6 +4,9 @@ module.exports = {
   WEATHER_API_KEY: process.env.WEATHER_API_KEY || 'your_openweather_api_key',
   WEATHER_API_URL: 'https://api.openweathermap.org/data/2.5',
   
+  // Gemini API Configuration
+  GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+  
   // Alert Thresholds
   RAIN_THRESHOLD_MM: 50,
   SAVINGS_THRESHOLD: 5000,
@@ -68,10 +71,12 @@ module.exports = {
     WEATHER_ERROR: "I'm unable to fetch weather information right now. Please try again later.",
     SCHEME_NOT_FOUND: "I don't have information about that particular scheme. Please check the scheme name.",
     AUTHENTICATION_ERROR: "You need to be logged in to access this information.",
-    SERVER_ERROR: "Something went wrong. Please try again."
+    SERVER_ERROR: "Something went wrong. Please try again.",
+    GEMINI_ERROR: "I'm having trouble processing your request right now. Please try again later.",
+    INVALID_QUERY: "I couldn't understand your request. Please try rephrasing your question."
   },
   
-  // Supported Intents
+  // Supported Intents - Updated to include all intents
   SUPPORTED_INTENTS: [
     'stock_value',
     'loan_trends',
@@ -81,6 +86,18 @@ module.exports = {
     'scheme_eligibility',
     'scheme_description',
     'user_summary',
-    'financial_summary'
-  ]
+    'financial_summary',
+    'agriculture_advisory',
+    'conversational'
+  ],
+  
+  // AI Service Configuration
+  AI_CONFIG: {
+    DEFAULT_MODEL: 'gemini-2.0-flash-exp',
+    MAX_QUERY_LENGTH: 1000,
+    MIN_QUERY_LENGTH: 2,
+    DEFAULT_CONFIDENCE_THRESHOLD: 0.6,
+    RESPONSE_TIMEOUT: 30000, // 30 seconds
+    MAX_CONTEXT_SIZE: 10000 // Maximum context data size in characters
+  }
 };

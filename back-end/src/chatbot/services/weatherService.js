@@ -217,6 +217,59 @@ const getCurrentWeather = async (sakhiId, params = {}) => {
 };
 
 /**
+ * Get agricultural weather advisory
+ */
+const getAgricultureAdvisory = async (sakhiId, params = {}) => {
+  const startTime = Date.now();
+  
+  try {
+    const { crop = 'general', season = 'current' } = params;
+    
+    // Get user location
+    const userLocation = await getUserLocation(sakhiId);
+    if (!userLocation) {
+      throw new ValidationError('Location not found. Please update your profile with location details.');
+    }
+
+    // Get extended forecast for agricultural analysis
+    const weatherData = await callWeatherAPI(userLocation, 7);
+    
+    const duration = Date.now() - startTime;
+    logger.logApiCall('OpenWeatherMap', '/forecast', duration, 200);
+
+    // Analyze weather conditions for agriculture
+    const advisory = generateAgricultureAdvisory(weatherData, crop, season);
+
+    return {
+      success: true,
+      message: advisory.summary,
+      data: {
+        location: weatherData.city.name,
+        crop,
+        season,
+        advisory: advisory.recommendations,
+        weatherConditions: advisory.conditions,
+        alerts: advisory.alerts,
+        timestamp: new Date().toISOString()
+      }
+    };
+
+  } catch (error) {
+    const duration = Date.now() - startTime;
+    logger.logApiCall('OpenWeatherMap', '/forecast', duration, null, error);
+    
+    if (error instanceof ValidationError) {
+      throw error;
+    }
+    
+    throw new ExternalApiError(
+      `Agriculture advisory service temporarily unavailable: ${error.message}`,
+      'OpenWeatherMap'
+    );
+  }
+};
+
+/**
  * Helper function to get user location from database
  */
 const getUserLocation = async (sakhiId) => {
@@ -360,4 +413,179 @@ const checkRainInForecast = (weatherData, targetDate, threshold) => {
     const rainfall = forecast.rain?.['3h'] || 0;
     if (rainfall > maxRainfall) {
       maxRainfall = rainfall;
-      timeOfDay = forecast.dt
+      timeOfDay = new Date(forecast.dt * 1000).toLocaleTimeString('en-IN', { 
+        hour: '2-digit', 
+        minute: '2-digit' 
+      });
+    }
+    rainProbability = Math.max(rainProbability, forecast.pop * 100); // Probability of precipitation
+  });
+
+  return {
+    rainExpected: maxRainfall >= threshold,
+    maxRainfall: Math.round(maxRainfall * 10) / 10,
+    rainProbability: Math.round(rainProbability),
+    timeOfDay
+  };
+};
+
+/**
+ * Generate rain-based recommendations
+ */
+const generateRainRecommendations = (alerts, threshold) => {
+  const recommendations = [];
+  
+  if (alerts.rainExpected) {
+    recommendations.push(`Heavy rain expected (${alerts.maxRainfall}mm). Consider postponing outdoor work.`);
+    
+    if (alerts.maxRainfall > threshold * 2) {
+      recommendations.push('Very heavy rainfall predicted. Ensure proper drainage and secure loose items.');
+    }
+    
+    recommendations.push('Good time for rainwater harvesting if systems are in place.');
+    recommendations.push('Check weather updates regularly for any changes.');
+  } else {
+    recommendations.push('Good weather for outdoor agricultural activities.');
+    recommendations.push('Consider irrigation if needed as no significant rain expected.');
+  }
+  
+  return recommendations;
+};
+
+/**
+ * Generate agriculture-specific weather advisory
+ */
+const generateAgricultureAdvisory = (weatherData, crop, season) => {
+  const forecast = formatForecastData(weatherData, 7);
+  const conditions = analyzeAgricultureConditions(forecast);
+  const recommendations = [];
+  const alerts = [];
+  
+  // Temperature analysis
+  if (conditions.avgTemp > 35) {
+    alerts.push('High temperature alert - protect crops from heat stress');
+    recommendations.push('Increase irrigation frequency during hot weather');
+    recommendations.push('Consider shade nets for sensitive crops');
+  } else if (conditions.avgTemp < 10) {
+    alerts.push('Low temperature alert - protect crops from cold');
+    recommendations.push('Cover sensitive plants during cold nights');
+  }
+  
+  // Rainfall analysis
+  if (conditions.totalRain > 50) {
+    alerts.push('Heavy rainfall expected - ensure proper drainage');
+    recommendations.push('Avoid pesticide/fertilizer application before heavy rain');
+    recommendations.push('Harvest ready crops before rain if possible');
+  } else if (conditions.totalRain < 5) {
+    alerts.push('Low rainfall - irrigation may be needed');
+    recommendations.push('Plan irrigation schedule for water-sensitive crops');
+  }
+  
+  // Humidity analysis
+  if (conditions.avgHumidity > 80) {
+    alerts.push('High humidity - fungal disease risk');
+    recommendations.push('Monitor crops for fungal infections');
+    recommendations.push('Ensure good air circulation around plants');
+  }
+  
+  // Crop-specific recommendations
+  if (crop !== 'general') {
+    recommendations.push(...getCropSpecificAdvice(crop, conditions, season));
+  }
+  
+  const summary = generateAdvisorySummary(alerts, recommendations);
+  
+  return {
+    summary,
+    recommendations,
+    alerts,
+    conditions
+  };
+};
+
+/**
+ * Analyze weather conditions for agriculture
+ */
+const analyzeAgricultureConditions = (forecast) => {
+  const totalRain = forecast.reduce((sum, day) => sum + day.rainfall, 0);
+  const avgTemp = forecast.reduce((sum, day) => sum + day.temperature.avg, 0) / forecast.length;
+  const avgHumidity = forecast.reduce((sum, day) => sum + day.humidity, 0) / forecast.length;
+  const maxTemp = Math.max(...forecast.map(day => day.temperature.max));
+  const minTemp = Math.min(...forecast.map(day => day.temperature.min));
+  
+  return {
+    totalRain: Math.round(totalRain * 10) / 10,
+    avgTemp: Math.round(avgTemp),
+    avgHumidity: Math.round(avgHumidity),
+    maxTemp,
+    minTemp,
+    rainyDays: forecast.filter(day => day.rainfall > 2).length
+  };
+};
+
+/**
+ * Get crop-specific advice
+ */
+const getCropSpecificAdvice = (crop, conditions, season) => {
+  const advice = [];
+  
+  switch (crop.toLowerCase()) {
+    case 'rice':
+      if (conditions.totalRain > 30) {
+        advice.push('Good conditions for rice cultivation');
+        advice.push('Monitor water levels in fields');
+      } else {
+        advice.push('Ensure adequate water supply for rice fields');
+      }
+      break;
+      
+    case 'wheat':
+      if (conditions.avgTemp > 30) {
+        advice.push('High temperature may affect wheat grain filling');
+      }
+      if (conditions.totalRain > 20) {
+        advice.push('Excess rain may cause wheat lodging - ensure drainage');
+      }
+      break;
+      
+    case 'cotton':
+      if (conditions.avgHumidity > 85) {
+        advice.push('High humidity increases bollworm risk in cotton');
+      }
+      if (conditions.totalRain < 10) {
+        advice.push('Cotton needs regular irrigation during dry periods');
+      }
+      break;
+      
+    case 'sugarcane':
+      if (conditions.totalRain > 40) {
+        advice.push('Excess rain may delay sugarcane harvest');
+      }
+      advice.push('Maintain proper drainage in sugarcane fields');
+      break;
+      
+    default:
+      advice.push('Monitor crop-specific weather requirements');
+  }
+  
+  return advice;
+};
+
+/**
+ * Generate advisory summary
+ */
+const generateAdvisorySummary = (alerts, recommendations) => {
+  if (alerts.length === 0) {
+    return 'Weather conditions are favorable for agricultural activities';
+  }
+  
+  const alertSummary = alerts.length === 1 ? '1 weather alert' : `${alerts.length} weather alerts`;
+  return `${alertSummary} for your area. Check recommendations for detailed guidance.`;
+};
+
+module.exports = {
+  getForecast,
+  checkRainAlert,
+  getCurrentWeather,
+  getAgricultureAdvisory
+};
